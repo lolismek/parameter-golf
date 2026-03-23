@@ -235,9 +235,18 @@ def run_ezkl_pipeline(onnx_path, seq_len, vocab_size, work_dir, timings):
         json.dump({"input_data": input_data}, f)
 
     # --- gen_settings ---
+    # Use low scales to avoid "significant bit truncation" errors.
+    # EZKL converts floats to fixed-point; lower scale = fewer fractional bits
+    # but avoids overflow on large weight values. calibrate_settings will fine-tune.
     print("  4a. gen_settings ...")
+    run_args = ezkl.PyRunArgs()
+    run_args.input_scale = 7
+    run_args.param_scale = 7
+    run_args.input_visibility = "public"
+    run_args.output_visibility = "public"
+    run_args.param_visibility = "fixed"
     with timer("gen_settings", timings):
-        ezkl.gen_settings(onnx_path, settings_path)
+        ezkl.gen_settings(onnx_path, settings_path, py_run_args=run_args)
 
     # --- calibrate ---
     print("  4b. calibrate_settings ...")
