@@ -189,13 +189,8 @@ def make_inference_model(model):
 
 def export_onnx(inf_model, seq_len, vocab_size, onnx_path, timings):
     import torch
-    import onnx
-    from onnx import numpy_helper
 
-    # Convert model to float32 with clamped weights to reduce value ranges
-    # that cause EZKL's "significant bit truncation" error.
     inf_model = inf_model.float()
-
     dummy = torch.randint(0, vocab_size, (1, seq_len))
     print(f"  Exporting ONNX (batch=1, seq_len={seq_len}) ...")
 
@@ -210,18 +205,6 @@ def export_onnx(inf_model, seq_len, vocab_size, onnx_path, timings):
             do_constant_folding=True,
             dynamo=False,
         )
-
-    # Post-process: convert all float tensors in the ONNX model to float16
-    # to shrink value ranges for EZKL's fixed-point quantization.
-    print("  Post-processing ONNX: converting initializers to float16 ...")
-    model_proto = onnx.load(onnx_path)
-    for init in model_proto.graph.initializer:
-        arr = numpy_helper.to_array(init)
-        if arr.dtype in ("float32", "float64"):
-            arr_f16 = arr.astype("float16")
-            new_tensor = numpy_helper.from_array(arr_f16, name=init.name)
-            init.CopyFrom(new_tensor)
-    onnx.save(model_proto, onnx_path)
 
     size_mb = os.path.getsize(onnx_path) / 1024 / 1024
     print(f"  ONNX file: {size_mb:.1f} MB")
@@ -313,6 +296,79 @@ def run_ezkl_pipeline(onnx_path, seq_len, vocab_size, work_dir, timings):
 
 
 # ---------------------------------------------------------------------------
+# Fallback: tiny model to isolate whether EZKL works at all
+# ---------------------------------------------------------------------------
+
+def _run_tiny_model_test(args, hp, timings):
+    """Run the full EZKL pipeline on a trivial linear model as a sanity check."""
+    import torch
+    import torch.nn as nn
+    import ezkl
+    import numpy as np
+
+    tiny_dir = os.path.join(args.work_dir, "tiny_test")
+    os.makedirs(tiny_dir, exist_ok=True)
+
+    # Trivial model: Embedding -> Linear -> output
+    class TinyModel(nn.Module):
+        def __init__(self, vocab, dim):
+            super().__init__()
+            self.emb = nn.Embedding(vocab, dim)
+            self.fc = nn.Linear(dim, vocab)
+        def forward(self, x):
+            return self.fc(self.emb(x))
+
+    tiny = TinyModel(hp.vocab_size, 32).float().eval()
+    dummy = torch.randint(0, hp.vocab_size, (1, args.seq_len))
+
+    onnx_path = os.path.join(tiny_dir, "tiny.onnx")
+    torch.onnx.export(tiny, (dummy,), onnx_path, input_names=["input_ids"],
+                       output_names=["logits"], opset_version=14, dynamo=False)
+    print(f"  Tiny ONNX exported: {os.path.getsize(onnx_path) / 1024:.1f} KB")
+
+    settings_path = os.path.join(tiny_dir, "settings.json")
+    cal_path = os.path.join(tiny_dir, "cal.json")
+    compiled_path = os.path.join(tiny_dir, "model.compiled")
+    vk_path = os.path.join(tiny_dir, "vk.key")
+    pk_path = os.path.join(tiny_dir, "pk.key")
+    witness_path = os.path.join(tiny_dir, "witness.json")
+    proof_path = os.path.join(tiny_dir, "proof.json")
+
+    input_data = np.random.randint(0, hp.vocab_size, (1, args.seq_len)).tolist()
+    with open(cal_path, "w") as f:
+        json.dump({"input_data": input_data}, f)
+
+    with timer("tiny_gen_settings", timings):
+        ezkl.gen_settings(onnx_path, settings_path)
+    print(f"  gen_settings OK")
+
+    with timer("tiny_calibrate", timings):
+        ezkl.calibrate_settings(cal_path, onnx_path, settings_path, target="resources")
+    print(f"  calibrate OK")
+
+    with timer("tiny_compile", timings):
+        ezkl.compile_circuit(onnx_path, compiled_path, settings_path)
+    print(f"  compile OK")
+
+    with timer("tiny_setup", timings):
+        ezkl.setup(compiled_path, vk_path, pk_path)
+    print(f"  setup OK")
+
+    with timer("tiny_witness", timings):
+        ezkl.gen_witness(cal_path, compiled_path, witness_path)
+    print(f"  witness OK")
+
+    with timer("tiny_prove", timings):
+        ezkl.prove(witness_path, compiled_path, pk_path, proof_path)
+    print(f"  prove OK")
+
+    with timer("tiny_verify", timings):
+        verified = ezkl.verify(proof_path, settings_path, vk_path)
+    print(f"  verify OK — verified={verified}")
+    print(f"  Tiny model proof time: {timings['tiny_prove']:.2f}s")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -377,8 +433,17 @@ def main():
             onnx_path, args.seq_len, hp.vocab_size, args.work_dir, timings
         )
     except Exception as e:
-        print(f"\n  EZKL pipeline FAILED at some step: {e}")
+        print(f"\n  EZKL pipeline FAILED on full model: {e}")
         import traceback; traceback.print_exc()
+
+        # ---- Fallback: tiny model to verify EZKL works at all ----
+        print("\n" + "-" * 60)
+        print("  Fallback: testing EZKL with a tiny linear model ...")
+        try:
+            _run_tiny_model_test(args, hp, timings)
+        except Exception as e2:
+            print(f"  Tiny model also FAILED: {e2}")
+
         _save_results(args, timings, success=False, error=f"ezkl: {e}")
         return
 
