@@ -189,13 +189,17 @@ def make_inference_model(model):
 
 def export_onnx(inf_model, seq_len, vocab_size, onnx_path, timings):
     import torch
+    import onnx
+    from onnx import numpy_helper
+
+    # Convert model to float32 with clamped weights to reduce value ranges
+    # that cause EZKL's "significant bit truncation" error.
+    inf_model = inf_model.float()
 
     dummy = torch.randint(0, vocab_size, (1, seq_len))
     print(f"  Exporting ONNX (batch=1, seq_len={seq_len}) ...")
 
     with timer("onnx_export", timings):
-        # Use legacy TorchScript-based exporter (dynamo=False) for EZKL compatibility.
-        # PyTorch 2.10's new dynamo exporter produces ONNX ops that EZKL/tract can't parse.
         torch.onnx.export(
             inf_model,
             (dummy,),
@@ -206,6 +210,18 @@ def export_onnx(inf_model, seq_len, vocab_size, onnx_path, timings):
             do_constant_folding=True,
             dynamo=False,
         )
+
+    # Post-process: convert all float tensors in the ONNX model to float16
+    # to shrink value ranges for EZKL's fixed-point quantization.
+    print("  Post-processing ONNX: converting initializers to float16 ...")
+    model_proto = onnx.load(onnx_path)
+    for init in model_proto.graph.initializer:
+        arr = numpy_helper.to_array(init)
+        if arr.dtype in ("float32", "float64"):
+            arr_f16 = arr.astype("float16")
+            new_tensor = numpy_helper.from_array(arr_f16, name=init.name)
+            init.CopyFrom(new_tensor)
+    onnx.save(model_proto, onnx_path)
 
     size_mb = os.path.getsize(onnx_path) / 1024 / 1024
     print(f"  ONNX file: {size_mb:.1f} MB")
@@ -235,18 +251,27 @@ def run_ezkl_pipeline(onnx_path, seq_len, vocab_size, work_dir, timings):
         json.dump({"input_data": input_data}, f)
 
     # --- gen_settings ---
-    # Use low scales to avoid "significant bit truncation" errors.
-    # EZKL converts floats to fixed-point; lower scale = fewer fractional bits
-    # but avoids overflow on large weight values. calibrate_settings will fine-tune.
+    # Try progressively lower scales to avoid "significant bit truncation".
+    # EZKL converts floats to fixed-point; lower scale = fewer fractional bits.
     print("  4a. gen_settings ...")
-    run_args = ezkl.PyRunArgs()
-    run_args.input_scale = 7
-    run_args.param_scale = 7
-    run_args.input_visibility = "public"
-    run_args.output_visibility = "public"
-    run_args.param_visibility = "fixed"
-    with timer("gen_settings", timings):
-        ezkl.gen_settings(onnx_path, settings_path, py_run_args=run_args)
+    gen_ok = False
+    for scale in (4, 2, 1, 0):
+        try:
+            run_args = ezkl.PyRunArgs()
+            run_args.input_scale = scale
+            run_args.param_scale = scale
+            run_args.input_visibility = "public"
+            run_args.output_visibility = "public"
+            run_args.param_visibility = "fixed"
+            with timer("gen_settings", timings):
+                ezkl.gen_settings(onnx_path, settings_path, py_run_args=run_args)
+            print(f"      gen_settings succeeded with scale={scale}")
+            gen_ok = True
+            break
+        except RuntimeError as e:
+            print(f"      scale={scale} failed: {e}")
+    if not gen_ok:
+        raise RuntimeError("gen_settings failed at all scale levels")
 
     # --- calibrate ---
     print("  4b. calibrate_settings ...")
