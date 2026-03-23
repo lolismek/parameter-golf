@@ -33,20 +33,13 @@ def timer(name, timings):
     return _Timer()
 
 
-def _download_srs(srs_path, logrows):
-    """Download the SRS file needed for EZKL setup/prove/verify."""
+def _ensure_srs(srs_path, logrows):
+    """Generate SRS file locally if it doesn't exist."""
     if os.path.exists(srs_path):
         return
-    import asyncio, ezkl
-
-    async def _get():
-        await ezkl.get_srs(srs_path, logrows)
-
-    loop = asyncio.new_event_loop()
-    try:
-        loop.run_until_complete(_get())
-    finally:
-        loop.close()
+    import ezkl
+    print(f"      Generating SRS (logrows={logrows}) ...")
+    ezkl.gen_srs(srs_path, logrows)
 
 
 def load_model(model_path):
@@ -291,7 +284,7 @@ def run_ezkl_pipeline(onnx_path, seq_len, vocab_size, work_dir, timings):
             settings = json.load(f)
         logrows = settings.get("run_args", {}).get("logrows", 17)
         srs_path = os.path.join(work_dir, "kzg.srs")
-        _download_srs(srs_path, logrows)
+        _ensure_srs(srs_path, logrows)
         ezkl.setup(compiled_path, vk_path, pk_path, srs_path)
 
     # --- witness ---
@@ -377,7 +370,7 @@ def _run_tiny_model_test(args, hp, timings):
             settings = json.load(f)
         logrows = settings.get("run_args", {}).get("logrows", 17)
         srs_path = os.path.join(tiny_dir, "kzg.srs")
-        _download_srs(srs_path, logrows)
+        _ensure_srs(srs_path, logrows)
         ezkl.setup(compiled_path, vk_path, pk_path, srs_path)
     print(f"  setup OK")
 
