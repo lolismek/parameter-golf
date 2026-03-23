@@ -110,18 +110,19 @@ def load_and_export_onnx(model_path, seq_len, work_dir):
 # ---------------------------------------------------------------------------
 
 def write_config(work_dir, onnx_path, input_path):
-    """Write a ZKTorch config.yaml."""
+    """Write a ZKTorch config.yaml with all absolute paths."""
+    abs_work = os.path.abspath(work_dir)
     config = {
         "model_path": os.path.abspath(onnx_path),
         "input_path": os.path.abspath(input_path) if input_path else "",
-        "ptau_path": os.path.join(work_dir, "ptau"),
+        "ptau_path": os.path.join(abs_work, "ptau"),
         "pow_len_log": 20,
         "loaded_pow_len_log": 20,
         "cq_range_log": 19,
         "cq_range_lower_log": 4,
         "scale_factor_log": 12,
     }
-    config_path = os.path.join(work_dir, "config.yaml")
+    config_path = os.path.join(abs_work, "config.yaml")
     # Write as YAML manually (avoid pyyaml dependency)
     with open(config_path, "w") as f:
         for k, v in config.items():
@@ -134,7 +135,7 @@ def write_config(work_dir, onnx_path, input_path):
 
 def run_zktorch(zktorch_bin, config_path, work_dir, timings):
     """Run the ZKTorch binary and capture output."""
-    cmd = [zktorch_bin, config_path]
+    cmd = [zktorch_bin, os.path.abspath(config_path)]
     env = os.environ.copy()
 
     print(f"  Running: {' '.join(cmd)}")
@@ -143,7 +144,6 @@ def run_zktorch(zktorch_bin, config_path, work_dir, timings):
             cmd,
             capture_output=True,
             text=True,
-            cwd=work_dir,
             env=env,
             timeout=3600,  # 1 hour max
         )
