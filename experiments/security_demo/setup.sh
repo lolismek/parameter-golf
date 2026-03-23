@@ -10,7 +10,7 @@ echo "=== Downloading data (10 training shards for demo) ==="
 python data/cached_challenge_fineweb.py --train-shards 10
 
 echo "=== Installing ZKML dependencies ==="
-pip install ezkl onnx onnxruntime
+pip install ezkl onnx onnxruntime onnxscript
 
 echo "=== Installing ZKTorch (build from source) ==="
 if ! command -v cargo &>/dev/null; then
