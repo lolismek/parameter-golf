@@ -33,6 +33,29 @@ def timer(name, timings):
     return _Timer()
 
 
+def _download_srs(srs_path, logrows):
+    """Download the SRS file needed for EZKL setup/prove/verify."""
+    if os.path.exists(srs_path):
+        return
+    # Try multiple approaches to download the SRS
+    # 1. Try ezkl CLI (may not be on PATH)
+    import shutil, subprocess
+    ezkl_bin = shutil.which("ezkl") or os.path.join(
+        os.path.dirname(sys.executable), "ezkl"
+    )
+    if os.path.isfile(ezkl_bin):
+        subprocess.run(
+            [ezkl_bin, "get-srs", "--srs-path", srs_path, "--logrows", str(logrows)],
+            check=True,
+        )
+        return
+    # 2. Fallback: download directly via urllib
+    import urllib.request
+    url = f"https://srs-gpu-bucket.s3.us-west-2.amazonaws.com/kzg{logrows}.srs"
+    print(f"      Downloading SRS from {url} ...")
+    urllib.request.urlretrieve(url, srs_path)
+
+
 def load_model(model_path):
     """Load the baseline GPT model and optionally restore a checkpoint."""
     sys.path.insert(0, "records/track_10min_16mb/2026-03-17_NaiveBaseline")
@@ -275,12 +298,7 @@ def run_ezkl_pipeline(onnx_path, seq_len, vocab_size, work_dir, timings):
             settings = json.load(f)
         logrows = settings.get("run_args", {}).get("logrows", 17)
         srs_path = os.path.join(work_dir, "kzg.srs")
-        if not os.path.exists(srs_path):
-            import subprocess
-            subprocess.run(
-                ["ezkl", "get-srs", "--srs-path", srs_path, "--logrows", str(logrows)],
-                check=True,
-            )
+        _download_srs(srs_path, logrows)
         ezkl.setup(compiled_path, vk_path, pk_path, srs_path)
 
     # --- witness ---
@@ -366,12 +384,7 @@ def _run_tiny_model_test(args, hp, timings):
             settings = json.load(f)
         logrows = settings.get("run_args", {}).get("logrows", 17)
         srs_path = os.path.join(tiny_dir, "kzg.srs")
-        if not os.path.exists(srs_path):
-            import subprocess
-            subprocess.run(
-                ["ezkl", "get-srs", "--srs-path", srs_path, "--logrows", str(logrows)],
-                check=True,
-            )
+        _download_srs(srs_path, logrows)
         ezkl.setup(compiled_path, vk_path, pk_path, srs_path)
     print(f"  setup OK")
 
