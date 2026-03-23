@@ -37,23 +37,16 @@ def _download_srs(srs_path, logrows):
     """Download the SRS file needed for EZKL setup/prove/verify."""
     if os.path.exists(srs_path):
         return
-    # Try multiple approaches to download the SRS
-    # 1. Try ezkl CLI (may not be on PATH)
-    import shutil, subprocess
-    ezkl_bin = shutil.which("ezkl") or os.path.join(
-        os.path.dirname(sys.executable), "ezkl"
-    )
-    if os.path.isfile(ezkl_bin):
-        subprocess.run(
-            [ezkl_bin, "get-srs", "--srs-path", srs_path, "--logrows", str(logrows)],
-            check=True,
-        )
-        return
-    # 2. Fallback: download directly via urllib
-    import urllib.request
-    url = f"https://srs-gpu-bucket.s3.us-west-2.amazonaws.com/kzg{logrows}.srs"
-    print(f"      Downloading SRS from {url} ...")
-    urllib.request.urlretrieve(url, srs_path)
+    import asyncio, ezkl
+
+    async def _get():
+        await ezkl.get_srs(srs_path, logrows)
+
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(_get())
+    finally:
+        loop.close()
 
 
 def load_model(model_path):
