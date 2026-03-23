@@ -271,7 +271,12 @@ def run_ezkl_pipeline(onnx_path, seq_len, vocab_size, work_dir, timings):
     # --- setup (keygen) ---
     print("  4d. setup (key generation) ...")
     with timer("setup_keygen", timings):
-        ezkl.setup(compiled_path, vk_path, pk_path)
+        with open(settings_path) as f:
+            settings = json.load(f)
+        logrows = settings.get("run_args", {}).get("logrows", 17)
+        srs_path = os.path.join(work_dir, "kzg.srs")
+        ezkl.get_srs(srs_path, logrows)
+        ezkl.setup(compiled_path, vk_path, pk_path, srs_path)
 
     # --- witness ---
     print("  4e. gen_witness ...")
@@ -281,12 +286,12 @@ def run_ezkl_pipeline(onnx_path, seq_len, vocab_size, work_dir, timings):
     # --- prove ---
     print("  4f. prove ...")
     with timer("prove", timings):
-        ezkl.prove(witness_path, compiled_path, pk_path, proof_path)
+        ezkl.prove(witness_path, compiled_path, pk_path, proof_path, srs_path)
 
     # --- verify ---
     print("  4g. verify ...")
     with timer("verify", timings):
-        verified = ezkl.verify(proof_path, settings_path, vk_path)
+        verified = ezkl.verify(proof_path, settings_path, vk_path, srs_path)
     print(f"      Verified: {verified}")
 
     proof_size = os.path.getsize(proof_path) if os.path.exists(proof_path) else 0
@@ -350,8 +355,15 @@ def _run_tiny_model_test(args, hp, timings):
         ezkl.compile_circuit(onnx_path, compiled_path, settings_path)
     print(f"  compile OK")
 
+    # Download SRS (structured reference string) if not cached
     with timer("tiny_setup", timings):
-        ezkl.setup(compiled_path, vk_path, pk_path)
+        # Read compiled settings to find required logrows
+        with open(settings_path) as f:
+            settings = json.load(f)
+        logrows = settings.get("run_args", {}).get("logrows", 17)
+        srs_path = os.path.join(tiny_dir, "kzg.srs")
+        ezkl.get_srs(srs_path, logrows)
+        ezkl.setup(compiled_path, vk_path, pk_path, srs_path)
     print(f"  setup OK")
 
     with timer("tiny_witness", timings):
@@ -359,11 +371,11 @@ def _run_tiny_model_test(args, hp, timings):
     print(f"  witness OK")
 
     with timer("tiny_prove", timings):
-        ezkl.prove(witness_path, compiled_path, pk_path, proof_path)
+        ezkl.prove(witness_path, compiled_path, pk_path, proof_path, srs_path)
     print(f"  prove OK")
 
     with timer("tiny_verify", timings):
-        verified = ezkl.verify(proof_path, settings_path, vk_path)
+        verified = ezkl.verify(proof_path, settings_path, vk_path, srs_path)
     print(f"  verify OK — verified={verified}")
     print(f"  Tiny model proof time: {timings['tiny_prove']:.2f}s")
 
