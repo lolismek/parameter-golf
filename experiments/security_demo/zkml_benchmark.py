@@ -194,14 +194,17 @@ def export_onnx(inf_model, seq_len, vocab_size, onnx_path, timings):
     print(f"  Exporting ONNX (batch=1, seq_len={seq_len}) ...")
 
     with timer("onnx_export", timings):
+        # Use legacy TorchScript-based exporter (dynamo=False) for EZKL compatibility.
+        # PyTorch 2.10's new dynamo exporter produces ONNX ops that EZKL/tract can't parse.
         torch.onnx.export(
             inf_model,
             (dummy,),
             onnx_path,
             input_names=["input_ids"],
             output_names=["logits"],
-            opset_version=17,
+            opset_version=14,
             do_constant_folding=True,
+            dynamo=False,
         )
 
     size_mb = os.path.getsize(onnx_path) / 1024 / 1024

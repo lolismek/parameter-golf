@@ -95,8 +95,9 @@ def load_and_export_onnx(model_path, seq_len, work_dir):
         onnx_path,
         input_names=["input_ids"],
         output_names=["logits"],
-        opset_version=17,
+        opset_version=14,
         do_constant_folding=True,
+        dynamo=False,
     )
     size_mb = os.path.getsize(onnx_path) / 1024 / 1024
     print(f"  ONNX exported: {size_mb:.1f} MB")
