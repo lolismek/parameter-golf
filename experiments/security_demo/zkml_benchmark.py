@@ -269,14 +269,18 @@ def run_ezkl_pipeline(onnx_path, seq_len, vocab_size, work_dir, timings):
         ezkl.compile_circuit(onnx_path, compiled_path, settings_path)
 
     # --- setup (keygen) ---
-    import asyncio
     print("  4d. setup (key generation) ...")
     with timer("setup_keygen", timings):
         with open(settings_path) as f:
             settings = json.load(f)
         logrows = settings.get("run_args", {}).get("logrows", 17)
         srs_path = os.path.join(work_dir, "kzg.srs")
-        asyncio.run(ezkl.get_srs(srs_path, logrows))
+        if not os.path.exists(srs_path):
+            import subprocess
+            subprocess.run(
+                ["ezkl", "get-srs", "--srs-path", srs_path, "--logrows", str(logrows)],
+                check=True,
+            )
         ezkl.setup(compiled_path, vk_path, pk_path, srs_path)
 
     # --- witness ---
@@ -357,13 +361,17 @@ def _run_tiny_model_test(args, hp, timings):
     print(f"  compile OK")
 
     # Download SRS (structured reference string) if not cached
-    import asyncio
     with timer("tiny_setup", timings):
         with open(settings_path) as f:
             settings = json.load(f)
         logrows = settings.get("run_args", {}).get("logrows", 17)
         srs_path = os.path.join(tiny_dir, "kzg.srs")
-        asyncio.run(ezkl.get_srs(srs_path, logrows))
+        if not os.path.exists(srs_path):
+            import subprocess
+            subprocess.run(
+                ["ezkl", "get-srs", "--srs-path", srs_path, "--logrows", str(logrows)],
+                check=True,
+            )
         ezkl.setup(compiled_path, vk_path, pk_path, srs_path)
     print(f"  setup OK")
 
