@@ -126,7 +126,7 @@ def make_inference_model(model):
             else:
                 logits = g.lm_head(x)
 
-            logits = g.logit_softcap * torch.tanh(logits / g.logit_softcap)
+            logits = g.logit_softcap * torch.tanh(logits * (1.0 / g.logit_softcap))
             return logits
 
         def _block_forward(self, block, x, x0):

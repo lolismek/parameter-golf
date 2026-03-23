@@ -99,6 +99,44 @@ def load_and_export_onnx(model_path, seq_len, work_dir):
         do_constant_folding=True,
         dynamo=False,
     )
+    # Post-process: replace Div nodes with Reciprocal+Mul.
+    # ZKTorch's Div implementation crashes on certain tensor shapes.
+    # Pattern: Div(Constant(1.0), Sqrt(x)) → Reciprocal(Sqrt(x)) i.e. Rsqrt
+    # General: Div(a, b) → Mul(a, Reciprocal(b))
+    import onnx
+    from onnx import helper
+    model_proto = onnx.load(onnx_path)
+
+    # Also check if ZKTorch supports Reciprocal — if not, we may need Pow(x, -1)
+    new_nodes = []
+    replaced = 0
+    for node in model_proto.graph.node:
+        if node.op_type == "Div":
+            # Replace Div(a, b) → Mul(a, Pow(b, -1))
+            # Pow(x, -1) is more universally supported than Reciprocal
+            neg_one_name = node.output[0] + "_neg1"
+            inv_name = node.output[0] + "_inv"
+
+            # Create constant -1
+            neg_one = helper.make_node(
+                "Constant", [], [neg_one_name],
+                value=helper.make_tensor("neg1", onnx.TensorProto.FLOAT, [], [-1.0]),
+            )
+            # b^(-1)
+            pow_node = helper.make_node("Pow", [node.input[1], neg_one_name], [inv_name])
+            # a * b^(-1)
+            mul_node = helper.make_node(
+                "Mul", [node.input[0], inv_name], list(node.output), name=node.name,
+            )
+            new_nodes.extend([neg_one, pow_node, mul_node])
+            replaced += 1
+        else:
+            new_nodes.append(node)
+    del model_proto.graph.node[:]
+    model_proto.graph.node.extend(new_nodes)
+    onnx.save(model_proto, onnx_path)
+    print(f"  Post-processed: replaced {replaced} Div nodes with Pow+Mul")
+
     size_mb = os.path.getsize(onnx_path) / 1024 / 1024
     print(f"  ONNX exported: {size_mb:.1f} MB")
 
@@ -110,26 +148,52 @@ def load_and_export_onnx(model_path, seq_len, work_dir):
 # ---------------------------------------------------------------------------
 
 def write_config(work_dir, onnx_path, input_path):
-    """Write a ZKTorch config.yaml with all absolute paths."""
+    """Write a ZKTorch config.yaml matching its expected nested YAML structure."""
     abs_work = os.path.abspath(work_dir)
-    config = {
-        "model_path": os.path.abspath(onnx_path),
-        "input_path": os.path.abspath(input_path) if input_path else "",
-        "ptau_path": os.path.join(abs_work, "ptau"),
-        "pow_len_log": 20,
-        "loaded_pow_len_log": 20,
-        "cq_range_log": 19,
-        "cq_range_lower_log": 4,
-        "scale_factor_log": 12,
-    }
+    zktorch_dir = find_zktorch_binary()
+    zktorch_root = os.path.dirname(os.path.dirname(os.path.dirname(zktorch_dir))) if zktorch_dir else ""
+    # ZKTorch ships a 'challenge' ptau file in its repo root
+    ptau_path = os.path.join(zktorch_root, "challenge") if zktorch_root else ""
+
+    # Create output directories
+    for d in ("models", "setups", "modelsEnc", "inputsEnc", "outputsEnc",
+              "proofs", "acc_proofs", "final_proofs"):
+        os.makedirs(os.path.join(abs_work, d), exist_ok=True)
+
+    config_yaml = f"""task: sample
+onnx:
+  model_path: "{os.path.abspath(onnx_path)}"
+  input_path: "{os.path.abspath(input_path) if input_path else ''}"
+ptau:
+  ptau_path: "{ptau_path}"
+  pow_len_log: 7
+  loaded_pow_len_log: 7
+sf:
+  scale_factor_log: 3
+  cq_range_log: 6
+  cq_range_lower_log: 5
+prover:
+  model_path: "{os.path.join(abs_work, 'models')}"
+  setup_path: "{os.path.join(abs_work, 'setups')}"
+  enc_model_path: "{os.path.join(abs_work, 'modelsEnc')}"
+  enc_input_path: "{os.path.join(abs_work, 'inputsEnc')}"
+  enc_output_path: "{os.path.join(abs_work, 'outputsEnc')}"
+  proof_path: "{os.path.join(abs_work, 'proofs')}"
+  acc_proof_path: "{os.path.join(abs_work, 'acc_proofs')}"
+  final_proof_path: "{os.path.join(abs_work, 'final_proofs')}"
+  enable_layer_setup: true
+verifier:
+  enc_model_path: "{os.path.join(abs_work, 'modelsEnc')}"
+  enc_input_path: "{os.path.join(abs_work, 'inputsEnc')}"
+  enc_output_path: "{os.path.join(abs_work, 'outputsEnc')}"
+  proof_path: "{os.path.join(abs_work, 'proofs')}"
+"""
+
     config_path = os.path.join(abs_work, "config.yaml")
-    # Write as YAML manually (avoid pyyaml dependency)
     with open(config_path, "w") as f:
-        for k, v in config.items():
-            if isinstance(v, str):
-                f.write(f'{k}: "{v}"\n')
-            else:
-                f.write(f"{k}: {v}\n")
+        f.write(config_yaml)
+    print(f"  Config written to {config_path}")
+    print(f"  PTAU: {ptau_path}")
     return config_path
 
 
